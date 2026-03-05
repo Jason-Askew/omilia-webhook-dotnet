@@ -1,0 +1,8 @@
+bin/
+obj/
+*.user
+*.suo
+cdk.out/
+**/kinesis-output.log
+exports/
+.DS_Store
