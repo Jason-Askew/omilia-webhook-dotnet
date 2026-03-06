@@ -10,6 +10,9 @@ namespace OmiliaWebhook.Infra;
 public class WebhookStackProps : StackProps
 {
     public string? WebhookSecret { get; set; }
+    public string? JwksUri { get; set; }
+    public string? JwtIssuer { get; set; }
+    public string? JwtAudience { get; set; }
 }
 
 public class WebhookStack : Stack
@@ -32,6 +35,12 @@ public class WebhookStack : Stack
         };
         if (props.WebhookSecret is not null)
             environment["WEBHOOK_SECRET"] = props.WebhookSecret;
+        if (props.JwksUri is not null)
+            environment["JWKS_URI"] = props.JwksUri;
+        if (props.JwtIssuer is not null)
+            environment["JWT_ISSUER"] = props.JwtIssuer;
+        if (props.JwtAudience is not null)
+            environment["JWT_AUDIENCE"] = props.JwtAudience;
 
         var fn = new Function(this, "WebhookHandler", new FunctionProps
         {

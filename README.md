@@ -13,6 +13,7 @@ Omilia OCP → POST /webhook → API Gateway HTTP API → Lambda (.NET 8) → Ki
 ```
 omilia-webhook-dotnet/
 ├── src/
+│   ├── Auth/JwtValidator.cs           # OAuth2 JWT validation (JWKS/RS256)
 │   ├── Handlers/WebhookHandler.cs     # Lambda handler (AWSSDK.Kinesis)
 │   ├── Types/CdrTypes.cs              # CDR schema types (System.Text.Json)
 │   └── Enrichment/Enricher.cs         # Stateless enrichment logic
@@ -66,6 +67,30 @@ dotnet run --project Dev -- send http://localhost:4000/webhook
 tail -f Dev/kinesis-output.log
 ```
 
+## Authentication
+
+The webhook supports two authentication methods. Both can be enabled simultaneously — JWT is tried first, with the static secret as fallback.
+
+### OAuth2 / JWT Bearer (recommended)
+
+Per the [Omilia Exports API](https://learn.ocp.ai/guides/exports-api), Omilia obtains a JWT from your OAuth2 token endpoint and sends it as `Authorization: Bearer <JWT>` on each webhook request. The webhook validates the token using JWKS (RS256).
+
+Configure via environment variables or CDK context:
+
+| Env Var | CDK Context | Purpose |
+|---|---|---|
+| `JWKS_URI` | `jwksUri` | JWKS endpoint URL (enables JWT auth) |
+| `JWT_ISSUER` | `jwtIssuer` | Expected `iss` claim (optional) |
+| `JWT_AUDIENCE` | `jwtAudience` | Expected `aud` claim (optional) |
+
+### Static webhook secret (fallback)
+
+The original `x-webhook-secret` header authentication remains available as a fallback.
+
+| Env Var | CDK Context | Purpose |
+|---|---|---|
+| `WEBHOOK_SECRET` | `webhookSecret` | Shared secret value |
+
 ## Deploying to AWS
 
 Requires AWS credentials and a bootstrapped CDK environment.
@@ -74,10 +99,16 @@ Requires AWS credentials and a bootstrapped CDK environment.
 dotnet publish src -c Release
 cdk deploy
 
-# With webhook secret
+# With OAuth2 JWT validation
+cdk deploy -c jwksUri=https://your-idp.example.com/.well-known/jwks.json \
+           -c jwtIssuer=https://your-idp.example.com/ \
+           -c jwtAudience=your-api-audience
+
+# With webhook secret (fallback)
 cdk deploy -c webhookSecret=your-shared-secret-here
 
-# Or via environment variable
+# Or via environment variables
+JWKS_URI=https://your-idp.example.com/.well-known/jwks.json cdk deploy
 OMILIA_WEBHOOK_SECRET=your-secret cdk deploy
 ```
 
@@ -143,7 +174,7 @@ The webhook accepts three formats:
 | **200** | All records accepted |
 | **207** | Partial failure — some records failed Kinesis write |
 | **400** | Empty body or no valid CDR records |
-| **401** | Invalid or missing webhook secret |
+| **401** | Invalid or missing credentials (JWT or webhook secret) |
 | **500** | Unhandled error — Omilia retries within 24-hour window |
 
 ## Scripts

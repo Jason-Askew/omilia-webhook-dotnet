@@ -4,6 +4,7 @@ using Amazon.Kinesis;
 using Amazon.Kinesis.Model;
 using Amazon.Lambda.APIGatewayEvents;
 using Amazon.Lambda.Core;
+using OmiliaWebhook.Auth;
 using OmiliaWebhook.Enrichment;
 using OmiliaWebhook.Types;
 
@@ -15,6 +16,10 @@ public class WebhookHandler
 {
     private static readonly string KinesisStreamName = Environment.GetEnvironmentVariable("KINESIS_STREAM_NAME") ?? "";
     private static readonly string? WebhookSecret = Environment.GetEnvironmentVariable("WEBHOOK_SECRET");
+    private static readonly string? JwksUri = Environment.GetEnvironmentVariable("JWKS_URI");
+    private static readonly string? JwtIssuer = Environment.GetEnvironmentVariable("JWT_ISSUER");
+    private static readonly string? JwtAudience = Environment.GetEnvironmentVariable("JWT_AUDIENCE");
+    private static readonly JwtValidator? Jwt = JwksUri is not null ? new JwtValidator(JwksUri, JwtIssuer, JwtAudience) : null;
     private static readonly HashSet<string> ValidMessageTypes = new() { "dialog_start", "dialog_step", "dialog_end" };
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -39,16 +44,9 @@ public class WebhookHandler
         try
         {
             // ── Auth ─────────────────────────────────────────
-            if (WebhookSecret is not null)
-            {
-                string? secret = null;
-                request.Headers?.TryGetValue("x-webhook-secret", out secret);
-                if (secret != WebhookSecret)
-                {
-                    context.Logger.LogWarning($"[{requestId}] Auth failed");
-                    return Respond(401, new { error = "Unauthorized" });
-                }
-            }
+            var authResult = await AuthenticateAsync(request, requestId, context);
+            if (authResult is not null)
+                return authResult;
 
             // ── Parse body ───────────────────────────────────
             if (string.IsNullOrEmpty(request.Body))
@@ -110,6 +108,47 @@ public class WebhookHandler
             context.Logger.LogError($"[{requestId}] Unhandled error: {ex}");
             return Respond(500, new { error = "Internal server error" });
         }
+    }
+
+    // ============================================================
+    // Authentication
+    // ============================================================
+
+    private static async Task<APIGatewayHttpApiV2ProxyResponse?> AuthenticateAsync(
+        APIGatewayHttpApiV2ProxyRequest request, string requestId, ILambdaContext context)
+    {
+        if (Jwt is null && WebhookSecret is null)
+            return null; // No auth configured
+
+        // Try Bearer token first when JWKS is configured
+        if (Jwt is not null)
+        {
+            string? authHeader = null;
+            request.Headers?.TryGetValue("authorization", out authHeader);
+
+            if (authHeader?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                var token = authHeader["Bearer ".Length..];
+                var result = await Jwt.ValidateTokenAsync(token);
+                if (result.IsValid)
+                    return null; // Authenticated
+
+                context.Logger.LogWarning($"[{requestId}] JWT validation failed: {result.Exception?.Message}");
+                return Respond(401, new { error = "Unauthorized" });
+            }
+        }
+
+        // Fall back to webhook secret
+        if (WebhookSecret is not null)
+        {
+            string? secret = null;
+            request.Headers?.TryGetValue("x-webhook-secret", out secret);
+            if (secret == WebhookSecret)
+                return null; // Authenticated
+        }
+
+        context.Logger.LogWarning($"[{requestId}] Auth failed — no valid credentials");
+        return Respond(401, new { error = "Unauthorized" });
     }
 
     // ============================================================
